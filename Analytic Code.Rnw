@@ -1,0 +1,395 @@
+\documentclass[fleqn,11pt]{article}
+\setlength\parindent{0pt}
+\usepackage{fullpage}
+\usepackage{dcolumn}
+\usepackage{fixltx2e}
+\usepackage{amsmath}
+\usepackage{scrextend}
+\usepackage[sc]{mathpazo}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\geometry{verbose,tmargin=2.5cm,bmargin=2.5cm,lmargin=2.5cm,rmargin=2.5cm}
+\setcounter{secnumdepth}{5}
+\setcounter{tocdepth}{5}
+\usepackage{url}
+\usepackage[unicode=true,pdfusetitle,
+            bookmarks=true,bookmarksnumbered=true,bookmarksopen=true,bookmarksopenlevel=2,
+            breaklinks=false,pdfborder={0 0 1},backref=false,colorlinks=false]
+{hyperref}
+\hypersetup{
+  pdfstartview={XYZ null null 1}}
+\usepackage{breakurl}
+\usepackage{amsfonts}
+\usepackage[dvips]{epsfig}
+\usepackage{algorithm2e}
+\usepackage{verbatim}
+\usepackage{mathtools}
+\usepackage{scrextend}
+\usepackage{enumitem}
+\usepackage{graphicx}
+\usepackage{multirow}
+\usepackage{IEEEtrantools}
+\graphicspath{ {images/} }
+\newcolumntype{L}[1]{>{\raggedright\let\newline\\\arraybackslash\hspace{0pt}}m{#1}}
+\newcolumntype{C}[1]{>{\centering\let\newline\\\arraybackslash\hspace{0pt}}m{#1}}
+\newcolumntype{R}[1]{>{\raggedleft\let\newline\\\arraybackslash\hspace{0pt}}m{#1}}
+\usepackage{setspace}
+\setstretch{1.15}
+
+\begin{document}
+\title{Age x Income: Analysis}
+\author{\vspace{-5ex}}
+\date{\vspace{-5ex}}
+\maketitle
+
+\section{Preliminaries}
+
+\textbf{\large{\textit{
+In this section, the RStudio workspace and console panes are cleared of old output, variables, and other miscellaneous debris.  Be sure that nothing to be removed is needed.  Once the decks are cleared, get required packages and data files.  
+}}}
+
+\subsection{Options}
+<<tidy=TRUE,message=FALSE,warning=FALSE>>=
+# Set some global options
+options(replace.assign=TRUE, width=65, digits=4,scipen=4, fig.width=4, fig.height=4)
+# Clear the workspace and console
+rm(list = ls(all.names = TRUE)) 
+cat("\014")
+# Start timing
+how_long <- Sys.time()
+# Set some additional formatting options
+library(knitr)
+library(formatR)
+knitr::opts_chunk$set(message = FALSE, tidy.opts = list(width.cutoff = 60), tidy = TRUE)
+thm <- knit_theme$get("biogoo")
+knit_theme$set(thm)
+@
+
+\subsection{Packages}
+<<message=FALSE,warning=FALSE>>=
+library(psych)
+library(rprojroot)
+library(minpack.lm)
+library(lme4)
+library(glmmTMB)
+library(multcomp)
+library(modelr)
+library(here)
+library(brms)
+library(cmdstanr)
+library(rstan)
+library(emmeans)
+library(tidybayes)
+library(bayestestR)
+library(tidyverse)
+@
+
+\subsection{Data and Functions}
+<<tidy=TRUE,message=FALSE,warning=FALSE>>=
+setwd(here("manuscript","Resubmission2","Analysis"))
+# Load the data and functions for data analyses
+source(here("manuscript","Resubmission2","Analysis","DataTrim.R"))
+source(here("manuscript","Resubmission2","Analysis","Function.R"))
+@
+
+\subsection{Demographics}
+<<tidy=TRUE,message=FALSE,warning=FALSE>>=
+Demo <- group_by(MCQ_ID_df, Group, ID, Race, Ethnicity) |>
+  mutate(Race = as.numeric(Race),
+         Race = case_when(Race == 1 ~ "American Indian or Alaska Native",
+                          Race == 2 ~ "Asian or Asian American",
+                          Race == 3 ~ "Black or African American",
+                          Race == 4 ~ "Native Hawaiian or Pacific Islander",
+                          Race == 5 ~ "White",
+                          Race == 6 ~ "More than one race"),
+         Ethnicity = case_when(Ethnicity == 0 ~ "Hispanic or Latino",
+                               Ethnicity == 1 ~ "Not Hispanic or Latino")) |> 
+  summarise_all(mean) 
+group_by(Demo, Race) |> 
+  count()
+group_by(Demo, Ethnicity) |> 
+  count()
+@
+
+\clearpage
+
+\section{Discounting Measures}
+
+\textbf{\large{\textit{
+The following analyses were conducted to establish the representativeness of the current discounting data:  For each discounting procedure (MCQ and Adj-Amt), we examined whether the results reflected the systematic changes in preference usually observed as the amount of reward and/or the delay to a reward increase.
+}}}
+
+\subsection{Model Fit and Magnitude Effect}
+<<tidy=TRUE,warning=FALSE>>=
+# MCQ: Logistic Growth Regression Model Fit
+group_by(MCQ_grp_df, Group, Amount) |>
+  do(# Intercept of the logistic growth function
+     Intercept = coef(nlsLM(Prop ~ 1 / (1 + exp( - (log_k - a) * (r) )), 
+                      data = ., start = list(a = 1, r = .01), 
+                      control = list(maxiter = 1000)))[1],
+     # Slope of the logistic growth function
+     Slope = coef(nlsLM(Prop ~ 1 / (1 + exp( - (log_k - a) * (r) )), 
+                        data = ., start = list(a = 1, r = .01), 
+                        control = list(maxiter = 1000)))[2],
+     # Model fit
+     R2 = rsquare(nlsLM(Prop ~ 1 / (1 + exp( - (log_k - a) * (r) )), 
+                        data = ., start = list(a = 1, r = .01), 
+                        control = list(maxiter = 1000)), data =.)) |>
+  as.data.frame() |> print(digits = 3)
+# MCQ: Magnitude Effect (Multilevel Logistic Regression)
+group_by(MCQ_ID_df, Group) |> 
+  summarise(pvalue = summary(
+    # Linear contrast was conducted using the glht() function from the multcomp package
+    glht(
+      # Multilevel logistic regression model was conducted using the glmer() function
+      # from the lme4 package
+      glmer(cbind(Num_Choice,9-Num_Choice) ~ -1+Amount+(1|ID), family=binomial()), 
+      linfct=matrix(c(contr.poly(3)[,1]), nc=3), alternative="two.sided", rhs=0)
+    )$test$pvalues)
+
+# Adj-Amt: Hyperboloid Function Model Fit
+group_by(AdjAmt_grp_df, Amount, Group) |>
+  do(# k of the hyperboloid discounting function
+     k = coef(nlsLM(Mean_RSV ~ 1 / (1 + (k) * Delay)^(s), 
+                    data = ., start = list(k = .1, s = 1), 
+                    control = list(maxiter = 1000)))[1],
+     # s of the hyperboloid discounting function
+     s = coef(nlsLM(Mean_RSV ~ 1 / (1 + (k) * Delay)^(s), 
+                    data = ., start = list(k = .1, s = 1), 
+                    control = list(maxiter = 1000)))[2],
+     # Model fit 
+     R2 = rsquare(nlsLM(Mean_RSV ~ 1 / (1 + (k) * Delay)^(s), 
+                        data = ., start = list(k = .1, s = 1), 
+                        control = list(maxiter = 1000)),
+                  data =.)) |>
+  as.data.frame() |>
+  print(digits = 3)
+# Adj-Amt: Magnitude Effect (Multilevel Beta Regression)
+group_by(AdjAmt_ID_df, Group) |>
+  summarise(pvalue = summary(
+    # Linear contrast was conducted using the glht() function from the multcomp package
+    glht(
+      # Multilevel logistic regression model was conducted using the glmmTMB() function
+      # from the glmmTMB package
+      glmmTMB(AuC ~ -1+as.factor(Amount)+(1|ID), family=beta_family()), 
+      linfct=matrix(c(contr.poly(3)[,1]), nc = 3), alternative="two.sided", rhs=0)
+    )$test$pvalues[1]) 
+@
+
+\subsection{Within-Procedure Correlation}
+
+\textbf{\large{\textit{
+The following analyses were conducted to evaluate the correlations among Amounts within each discounting procedure. 
+}}}
+
+<<tidy=TRUE>>=
+# MCQ
+MCQ_cor <- ungroup(MCQ_ID_df) |> 
+  pivot_wider(names_from = Amount, values_from = Num_Choice) |>
+  select(`$25-$35`,`$50-$60`,`$75-$85`) 
+print(cor(MCQ_cor), digits = 2)
+
+# Adj-Amt
+AdjAmt_cor <- ungroup(AdjAmt_ID_df) |> 
+  pivot_wider(names_from = Amount, values_from = AuC) |>
+  select(`30`,`80`,`500`) |>
+  rename("$30" = "30", "$80" = "80", "$500" = "500")
+print(cor(AdjAmt_cor), digits = 2)
+@
+
+\subsection{Between-Procedure Correlation}
+
+\textbf{\large{\textit{
+The following analyses were conducted to evaluate the intercorrelations among Amounts and the two discounting procedures.
+}}}
+
+<<tidy=TRUE>>=
+print(cor(MCQ_cor$`$25-$35`, AdjAmt_cor$`$30`), digits = 2) # $30
+print(cor(MCQ_cor$`$75-$85`, AdjAmt_cor$`$80`), digits = 2) # $80
+print(cor(cbind(MCQ_cor, AdjAmt_cor)), digits = 2) # All Amounts
+@
+
+\clearpage
+
+\section{Effects of Age and Distress on Discounting}
+
+\textbf{\large{\textit{
+Focused contrasts were conducted using multilevel generalized linear models to examine the effect of Age at each level of Income for each discounting procedure using data from the two common amounts (i.e., \$30, \$80).
+}}}
+
+\subsection{Discounting = fn[Age]}
+<<tidy=TRUE>>=
+# Note: See Function.R file for more information on binomial_brm(), beta_brm(), and brm_summary() functions
+
+# Lower Income
+MCQ_LowInc_mod1 <- binomial_brm(
+  Formula = bf(Num_Choice | trials(9) ~ Age_grp_c + (1 | ID)), 
+  Data = subset(MCQ_mod1_df, Income_grp == 0)) # MCQ 
+brm_summary(MCQ_LowInc_mod1)
+AdjAmt_LowInc_mod1 <- beta_brm(
+  Formula = bf(AuC ~ Age_grp_c + (1 | ID)), 
+  Data = subset(AdjAmt_mod1_df, Income_grp == 0)) # Adj-Amt 
+brm_summary(AdjAmt_LowInc_mod1)
+
+# Higher Income
+MCQ_HighInc_mod1 <- binomial_brm(
+  Formula = bf(Num_Choice | trials(9) ~ Age_grp_c + (1 | ID)), 
+  Data = subset(MCQ_mod1_df, Income_grp == 1)) # MCQ 
+brm_summary(MCQ_HighInc_mod1)
+AdjAmt_HighInc_mod1 <- beta_brm(
+  Formula = bf(AuC ~ Age_grp_c + (1 | ID)), 
+  Data = subset(AdjAmt_mod1_df, Income_grp == 1)) # Adj-Amt 
+brm_summary(AdjAmt_HighInc_mod1)
+@
+
+\subsection{Discounting = fn[Age, Education, Gender]}
+<<tidy=TRUE>>=
+# Lower Income
+MCQ_LowInc_mod2 <- binomial_brm(
+  Formula = bf(Num_Choice | trials(9) ~ Age_grp_c + Education_grp_c + Gender_c + (1 | ID)), 
+  Data = subset(MCQ_mod2_df, Income_grp == 0)) # MCQ 
+brm_summary(MCQ_LowInc_mod2)
+AdjAmt_LowInc_mod2 <- beta_brm(
+  Formula = bf(AuC ~ Age_grp_c + Education_grp_c + Gender_c + (1 | ID)), 
+  Data = subset(AdjAmt_mod2_df, Income_grp == 0)) # Adj-Amt 
+brm_summary(AdjAmt_LowInc_mod2)
+
+# Higher Income
+MCQ_HighInc_mod2 <- binomial_brm(
+  Formula = bf(Num_Choice | trials(9) ~ Age_grp_c + Education_grp_c + Gender_c + (1 | ID)), 
+  Data = subset(MCQ_mod2_df, Income_grp == 1)) # MCQ 
+brm_summary(MCQ_HighInc_mod2)
+AdjAmt_HighInc_mod2 <- beta_brm(
+  Formula = bf(AuC ~ Age_grp_c + Education_grp_c + Gender_c + (1 | ID)), 
+  Data = subset(AdjAmt_mod2_df, Income_grp == 1)) # Adj-Amt 
+brm_summary(AdjAmt_HighInc_mod2)
+@
+
+\subsection{Discounting = fn[Age, Education, Gender, HADS]}
+<<tidy=TRUE>>=
+# Lower Income
+MCQ_LowInc_mod3 <- binomial_brm(
+  Formula = bf(Num_Choice | trials(9) ~ Age_grp_c + Education_grp_c + Gender_c + HADS_c + (1 | ID)), 
+  Data = subset(MCQ_mod3_df, Income_grp == 0)) # MCQ 
+brm_summary(MCQ_LowInc_mod3)
+AdjAmt_LowInc_mod3 <- beta_brm(
+  Formula = bf(AuC ~ Age_grp_c + Education_grp_c + Gender_c + HADS_c + (1 | ID)), 
+  Data = subset(AdjAmt_mod3_df, Income_grp == 0)) # Adj-Amt 
+brm_summary(AdjAmt_LowInc_mod3)
+
+# Higher Income
+MCQ_HighInc_mod3 <- binomial_brm(
+  Formula = bf(Num_Choice | trials(9) ~ Age_grp_c + Education_grp_c + Gender_c + HADS_c + (1 | ID)), 
+  Data = subset(MCQ_mod3_df, Income_grp == 1)) # MCQ 
+brm_summary(MCQ_HighInc_mod3)
+AdjAmt_HighInc_mod3 <- beta_brm(
+  Formula = bf(AuC ~ Age_grp_c + Education_grp_c + Gender_c + HADS_c + (1 | ID)), 
+  Data = subset(AdjAmt_mod3_df, Income_grp == 1)) # Adj-Amt 
+brm_summary(AdjAmt_HighInc_mod3)
+@
+
+\section{Effect of Income on Discounting}
+
+\textbf{\large{\textit{
+Focused contrasts were conducted using multilevel generalized linear models to examine the effects of Income at each level of Age using data from the two common amounts (i.e., \$30, \$80).
+}}}
+
+\subsection{Discounting = fn[Income]}
+<<tidy=TRUE>>=
+# Younger
+MCQ_Young_mod1 <- binomial_brm(
+  Formula = bf(Num_Choice | trials(9) ~ Income_grp_c + (1 | ID)), 
+  Data = subset(MCQ_mod1_df, Age_grp == 0)) # MCQ 
+brm_summary(MCQ_Young_mod1)
+AdjAmt_Young_mod1 <- beta_brm(
+  Formula = bf(AuC ~ Income_grp_c + (1 | ID)), 
+  Data = subset(AdjAmt_mod1_df, Age_grp == 0)) # Adj-Amt 
+brm_summary(AdjAmt_Young_mod1)
+
+# Older
+MCQ_Old_mod1 <- binomial_brm(
+  Formula = bf(Num_Choice | trials(9) ~ Income_grp_c + (1 | ID)), 
+  Data = subset(MCQ_mod1_df, Age_grp == 1)) # MCQ 
+brm_summary(MCQ_Old_mod1)
+AdjAmt_Old_mod1 <- beta_brm(
+  Formula = bf(AuC ~ Income_grp_c + (1 | ID)), 
+  Data = subset(AdjAmt_mod1_df, Age_grp == 1)) # Adj-Amt 
+brm_summary(AdjAmt_Old_mod1)
+@
+
+\subsection{Discounting = fn[Income, Education, Gender]}
+
+<<tidy=TRUE>>=
+# Younger
+MCQ_Young_mod2 <- binomial_brm(
+  Formula = bf(Num_Choice | trials(9) ~ Income_grp_c + Education_grp_c + Gender_c + (1 | ID)), 
+  Data = subset(MCQ_mod2_df, Age_grp == 0)) # MCQ 
+brm_summary(MCQ_Young_mod2)
+AdjAmt_Young_mod2 <- beta_brm(
+  Formula = bf(AuC ~ Income_grp_c + Education_grp_c + Gender_c + (1 | ID)), 
+  Data = subset(AdjAmt_mod2_df, Age_grp == 0)) # Adj-Amt 
+brm_summary(AdjAmt_Young_mod2)
+
+# Older
+MCQ_Old_mod2 <- binomial_brm(
+  Formula = bf(Num_Choice | trials(9) ~ Income_grp_c + Education_grp_c + Gender_c + (1 | ID)), 
+  Data = subset(MCQ_mod2_df, Age_grp == 1)) # MCQ 
+brm_summary(MCQ_Old_mod2)
+AdjAmt_Old_mod2 <- beta_brm(
+  Formula = bf(AuC ~ Income_grp_c + Education_grp_c + Gender_c + (1 | ID)), 
+  Data = subset(AdjAmt_mod2_df, Age_grp == 1)) # Adj-Amt 
+brm_summary(AdjAmt_Old_mod2)
+@
+
+\subsection{The Association of Age/Income with the Composite Discounting Measure}
+
+\textbf{\large{\textit{
+The following analyses used a composite discounting measure (i.e., the participant’s mean z-scores on the delayed choices and AuC measures) to evaluate the correlations between Age Group and z-scores for each Income Group and between Income Group and z-scores for each Age Group. 
+}}}
+
+<<tidy=TRUE>>=
+# Correlation between Age Group and z-score for each Income Group
+cor.test(subset(z_df, Income_grp == 0)$z_score, subset(z_df, Income_grp == 0)$Age_grp) # Lower Income
+cor.test(subset(z_df, Income_grp == 1)$z_score, subset(z_df, Income_grp == 1)$Age_grp) # Higher Income
+
+# Correlation between Income Group and z-score for each Age Group
+cor.test(subset(z_df, Age_grp == 0)$z_score, subset(z_df, Age_grp == 0)$Income_grp) # Younger
+cor.test(subset(z_df, Age_grp == 1)$z_score, subset(z_df, Age_grp == 1)$Income_grp) # Older
+@
+
+\section{The Magnitude of the Age Difference}
+
+\textbf{\large{\textit{
+The following analyses used the composite discounting measure to examine the effects of Age and Income on discounting. 
+}}}
+
+<<tidy=TRUE>>=
+# Mean z_score for each group
+group_by(z_df, Age_grp, Income_grp) |>
+  summarise(mean_zscore = mean(z_score)) |>
+  mutate(Age_grp = ifelse(Age_grp == 0, "Younger", "Older"),
+         Income_grp = ifelse(Income_grp == 0, "Lower-Income", "Higher-Income"))
+# z-score = fn[Age, Income, Age x Income]
+summary(lm(z_score ~ (Age_grp_c + Income_grp_c)^2, data = z_df))
+
+# Age effect in each of the two income groups (Discounting = fn[Continuous Age]
+summary(lm(z_score ~ Age, data = subset(z_df, Income_grp == 0))) # Lower Income
+summary(lm(z_score ~ Age, data = subset(z_df, Income_grp == 1))) # Higher Income
+@ 
+
+\clearpage
+
+<<tidy=TRUE>>=
+# Get system details.
+S <- benchmarkme::get_sys_details()
+GB <- memuse::Sys.meminfo()
+@
+\textbf{\large{\textit{
+The current machine uses the following CPU: \Sexpr{S$cpu$model_name}, with \Sexpr{S$cpu$no_of_cores} cores and \Sexpr{GB$totalram} of RAM. 
+}}}
+
+<<tidy=TRUE>>=
+sessionInfo()
+Sys.time()-how_long 
+@
+\end{document}
